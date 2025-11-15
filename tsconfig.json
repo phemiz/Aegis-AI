@@ -24,5 +24,10 @@
     "dsl/**/*.ts",
     "lib/**/*.ts",
     "types/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "aegis_server.ts",
+    "aegis_server/**/*"
   ]
 }
