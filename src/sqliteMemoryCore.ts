@@ -153,6 +153,12 @@ export class SqliteMemoryCore implements MemoryCore {
       });
   }
 
+  async deleteItem(userId: string, key: string): Promise<void> {
+    this.db
+      .prepare("DELETE FROM items WHERE userId = ? AND key = ?")
+      .run(userId, key);
+  }
+
   async listItems(
     userId: string,
     filter: { type?: string }
