@@ -22,6 +22,7 @@
     "aegis_server/**/*.ts",
     "orchestrator/**/*.ts",
     "dsl/**/*.ts",
-    "lib/**/*.ts"
+    "lib/**/*.ts",
+    "types/**/*.d.ts"
   ]
 }
