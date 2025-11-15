@@ -1,0 +1,216 @@
+id: weekly_performance_report
+name: "Weekly Performance Report: GA + CRM + Social to Google Doc"
+description: >
+  Prepare a weekly performance report for the user's business by pulling data from
+  Google Analytics, a connected CRM, and top social media mentions, then compiling
+  everything into a single, formatted Google Doc with key insights.
+
+inputs:
+  userId:
+    type: string
+    description: "ID of the user requesting the weekly report."
+  prompt:
+    type: string
+    default: "Prepare a weekly performance report for my business."
+
+steps:
+  # 1. Load integrations and reporting configuration
+  - id: load_reporting_config
+    type: tool
+    description: "Load the user's reporting configuration (GA view, CRM account, social handles)."
+    tool: "memory.read"
+    inputs:
+      userId: "{{inputs.userId}}"
+      key: "user.reporting.config"
+    outputs:
+      reportingConfig: "$.item.data"
+
+  # 2. Determine date range for the weekly report
+  - id: determine_date_range
+    type: llm
+    description: "Compute the date range for the weekly report (e.g., last 7 days)."
+    inputs:
+      promptTemplate: |
+        You are determining the date range for a weekly business performance report.
+        Today (ISO): {{today}}
+
+        Decide the start and end dates (inclusive) for the last full 7-day period
+        to report on.
+
+        Respond as JSON:
+        {
+          "startDate": "YYYY-MM-DD",
+          "endDate": "YYYY-MM-DD"
+        }
+      variables:
+        today: "{{nowIso}}"
+    outputs:
+      dateRange: "$.json"
+
+  # 3. Fetch Google Analytics data
+  - id: fetch_ga_data
+    type: tool
+    description: "Fetch key website metrics from Google Analytics for the selected date range."
+    tool: "ga.get_report"
+    inputs:
+      viewId: "{{steps.load_reporting_config.outputs.reportingConfig.ga.viewId}}"
+      startDate: "{{steps.determine_date_range.outputs.dateRange.startDate}}"
+      endDate: "{{steps.determine_date_range.outputs.dateRange.endDate}}"
+      metrics:
+        - "users"
+        - "sessions"
+        - "pageviews"
+        - "bounceRate"
+      dimensions:
+        - "sourceMedium"
+        - "landingPagePath"
+    outputs:
+      gaReport: "$"
+
+  # 4. Fetch recent sales from CRM
+  - id: fetch_crm_sales
+    type: tool
+    description: "Fetch recent sales / revenue data from the connected CRM."
+    tool: "crm.get_sales"
+    inputs:
+      accountId: "{{steps.load_reporting_config.outputs.reportingConfig.crm.accountId}}"
+      startDate: "{{steps.determine_date_range.outputs.dateRange.startDate}}"
+      endDate: "{{steps.determine_date_range.outputs.dateRange.endDate}}"
+    outputs:
+      crmSales: "$"
+
+  # 5. Fetch top social media mentions
+  - id: fetch_social_mentions
+    type: tool
+    description: "Fetch top social media mentions/engagement for the week."
+    tool: "social.get_mentions"
+    inputs:
+      handles: "{{steps.load_reporting_config.outputs.reportingConfig.social.handles}}"
+      startDate: "{{steps.determine_date_range.outputs.dateRange.startDate}}"
+      endDate: "{{steps.determine_date_range.outputs.dateRange.endDate}}"
+      limit: 20
+    outputs:
+      socialMentions: "$"
+
+  # 6. Synthesize raw data into structured insights
+  - id: synthesize_insights
+    type: llm
+    description: "Combine GA, CRM, and social data into structured weekly insights."
+    inputs:
+      promptTemplate: |
+        You are preparing a weekly performance report for a business.
+
+        Date range:
+        {{dateRange}}
+
+        Google Analytics report (JSON):
+        {{gaReport}}
+
+        CRM sales data (JSON):
+        {{crmSales}}
+
+        Social media mentions (JSON):
+        {{socialMentions}}
+
+        Produce structured insights including:
+        - trafficOverview: key trends in website traffic (users, sessions, sources)
+        - acquisitionInsights: which channels performed best
+        - conversionAndRevenue: sales/revenue summary and key deals
+        - socialHighlights: notable mentions, posts, or spikes in engagement
+        - risksOrIssues: any concerning signals (drops, anomalies)
+        - recommendations: 3–7 concrete actions for next week
+
+        Respond as JSON:
+        {
+          "trafficOverview": "...",
+          "acquisitionInsights": "...",
+          "conversionAndRevenue": "...",
+          "socialHighlights": "...",
+          "risksOrIssues": "...",
+          "recommendations": ["...", "..."]
+        }
+      variables:
+        dateRange: "{{steps.determine_date_range.outputs.dateRange}}"
+        gaReport: "{{steps.fetch_ga_data.outputs.gaReport}}"
+        crmSales: "{{steps.fetch_crm_sales.outputs.crmSales}}"
+        socialMentions: "{{steps.fetch_social_mentions.outputs.socialMentions}}"
+    outputs:
+      insights: "$.json"
+
+  # 7. Draft the formatted report body
+  - id: draft_report_body
+    type: llm
+    description: "Draft a well-structured weekly performance report in markdown/Doc-friendly format."
+    inputs:
+      promptTemplate: |
+        You are drafting a weekly performance report for a business.
+
+        Date range:
+        {{dateRange}}
+
+        Insights:
+        {{insights}}
+
+        Write a professional report with sections:
+        1. Executive Summary
+        2. Website Performance (Google Analytics)
+        3. Sales & Revenue (CRM)
+        4. Social Media Highlights
+        5. Risks & Issues
+        6. Recommendations for Next Week
+
+        Use headings, bullet lists, and short paragraphs.
+        Do not include any system instructions; only the report content.
+
+        Respond as plain text suitable for a Google Doc.
+      variables:
+        dateRange: "{{steps.determine_date_range.outputs.dateRange}}"
+        insights: "{{steps.synthesize_insights.outputs.insights}}"
+    outputs:
+      reportBody: "$.text"
+
+  # 8. Create a Google Doc with the report
+  - id: create_google_doc
+    type: tool
+    description: "Create a new Google Doc for this weekly performance report."
+    tool: "gdocs.create_document"
+    inputs:
+      title: "Weekly Performance Report ({{steps.determine_date_range.outputs.dateRange.startDate}} to {{steps.determine_date_range.outputs.dateRange.endDate}})"
+      body: "{{steps.draft_report_body.outputs.reportBody}}"
+      folderId: "{{steps.load_reporting_config.outputs.reportingConfig.gdocs.folderId}}"
+    outputs:
+      docInfo: "$"
+
+  # 9. Persist a reference to this report in memory for future retrieval
+  - id: save_report_reference
+    type: tool
+    description: "Store metadata about the created weekly report in the memory core."
+    tool: "memory.write"
+    inputs:
+      userId: "{{inputs.userId}}"
+      type: "weekly_report"
+      key: "weekly_report.{{steps.determine_date_range.outputs.dateRange.startDate}}_{{steps.determine_date_range.outputs.dateRange.endDate}}"
+      data:
+        userId: "{{inputs.userId}}"
+        created_at: "{{nowIso}}"
+        dateRange: "{{steps.determine_date_range.outputs.dateRange}}"
+        docId: "{{steps.create_google_doc.outputs.docInfo.id}}"
+        docUrl: "{{steps.create_google_doc.outputs.docInfo.url}}"
+        sourcePrompt: "{{inputs.prompt}}"
+      tags:
+        - "weekly_report"
+        - "performance_report"
+        - "google_docs"
+    outputs:
+      writeResult: "$.success"
+
+outputs:
+  docId:
+    description: "ID of the created Google Doc containing the weekly report."
+    value: "{{steps.create_google_doc.outputs.docInfo.id}}"
+  docUrl:
+    description: "URL of the created Google Doc containing the weekly report."
+    value: "{{steps.create_google_doc.outputs.docInfo.url}}"
+  dateRange:
+    description: "Date range covered by this weekly report."
+    value: "{{steps.determine_date_range.outputs.dateRange}}"

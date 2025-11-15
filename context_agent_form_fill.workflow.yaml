@@ -1,0 +1,142 @@
+id: context_agent_form_fill
+name: "Context-Agent Form Filling"
+description: >
+  Detects and fills web forms using user profile information from the memory core,
+  minimizing prompts while ensuring correctness and safety.
+
+inputs:
+  userId:
+    type: string
+    description: "ID of the current user."
+  pageId:
+    type: string
+    description: "Web page handle where the form is currently open."
+
+steps:
+  # 1. Load user profile from memory core
+  - id: load_profile
+    type: tool
+    description: "Load primary user profile for autofill."
+    tool: "memory.read"
+    inputs:
+      userId: "{{inputs.userId}}"
+      key: "user.profile.primary"
+    outputs:
+      profileItem: "$.item"
+
+  # 2. Detect form fields on the page
+  - id: detect_form_fields
+    type: tool
+    description: "Detect form fields on the current page."
+    tool: "web.find_form_fields"
+    inputs:
+      pageId: "{{inputs.pageId}}"
+    outputs:
+      fields: "$.fields"
+
+  # 3. Map form fields to profile attributes
+  - id: map_fields_to_profile
+    type: llm
+    description: "Map each form field to the most appropriate profile attribute."
+    inputs:
+      promptTemplate: |
+        You are a form-auto-fill mapping assistant.
+
+        Form fields (JSON):
+        {{fields}}
+
+        User profile (JSON):
+        {{profile}}
+
+        For each field, decide if it corresponds to a profile attribute.
+        Prefer standard mappings like:
+        - full_name, first_name, last_name
+        - email, phone
+        - company.name, job_title
+        - address.line1, address.line2, address.city, address.state, address.postal_code, address.country
+
+        Respond as JSON:
+        {
+          "mappings": [
+            {
+              "fieldId": "...",
+              "attribute": "company.name",
+              "value": "...",   // copied from profile
+              "selector": "...", // selector from the original field object
+              "label": "...",    // copied labelText if available
+              "confidence": 0.95
+            }
+          ],
+          "unmappedFields": [
+            { "fieldId": "...", "label": "...", "reason": "..." }
+          ]
+        }
+      variables:
+        fields: "{{steps.detect_form_fields.outputs.fields}}"
+        profile: "{{steps.load_profile.outputs.profileItem.data}}"
+    outputs:
+      mappingResult: "$.json"
+
+  # 4. Decide what to autofill vs ask user
+  - id: choose_autofill_values
+    type: llm
+    description: "Decide which fields to auto-fill vs ask the user about."
+    inputs:
+      promptTemplate: |
+        Decide autofill actions based on mapping confidence.
+
+        Mapping result:
+        {{mappingResult}}
+
+        Policy:
+        - If confidence >= 0.9 and field is not clearly password or payment-related, autofill.
+        - If 0.6 <= confidence < 0.9, mark as "ask".
+        - Otherwise "skip".
+
+        Assume no password or payment fields for now.
+
+        Respond as JSON:
+        {
+          "autoFill": [
+            { "fieldId": "...", "selector": "...", "value": "...", "label": "..." }
+          ],
+          "askUser": [
+            { "fieldId": "...", "selector": "...", "suggestedValue": "...", "label": "..." }
+          ],
+          "skip": [
+            { "fieldId": "...", "label": "...", "reason": "..." }
+          ]
+        }
+      variables:
+        mappingResult: "{{steps.map_fields_to_profile.outputs.mappingResult}}"
+    outputs:
+      autofillPlan: "$.json"
+
+  # 5. Autofill high-confidence fields
+  - id: autofill_fields
+    type: composite
+    description: "Set values for high-confidence fields using web.set_value."
+    loop:
+      over: "{{steps.choose_autofill_values.outputs.autofillPlan.autoFill}}"
+      as: item
+    steps:
+      - id: set_value
+        type: tool
+        tool: "web.set_value"
+        inputs:
+          pageId: "{{inputs.pageId}}"
+          selector: "{{item.selector}}"
+          value: "{{item.value}}"
+        outputs:
+          result: "$"
+
+  # Note: medium-confidence fields in askUser can be surfaced to the user via UI,
+  # then filled with additional web.set_value calls in a follow-up interaction.
+
+outputs:
+  summary:
+    description: "What was auto-filled and what still needs user input."
+    value:
+      autoFilled: "{{steps.choose_autofill_values.outputs.autofillPlan.autoFill}}"
+      askUser: "{{steps.choose_autofill_values.outputs.autofillPlan.askUser}}"
+      skipped: "{{steps.choose_autofill_values.outputs.autofillPlan.skip}}"

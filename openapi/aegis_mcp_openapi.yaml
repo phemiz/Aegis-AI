@@ -1,0 +1,661 @@
+openapi: 3.1.0
+info:
+  title: Aegis MCP API
+  version: 1.0.0
+  description: |
+    Aegis MCP is a remote browser automation and research backend that exposes
+    asynchronous task and monitoring APIs with streaming logs, artifacts, and
+    integration-friendly error handling.
+
+servers:
+  - url: https://aegis-mcp.example.com
+    description: Example Aegis MCP server
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code.
+        message:
+          type: string
+          description: Human-readable error message.
+        details:
+          type: object
+          additionalProperties: true
+        retriable:
+          type: boolean
+          description: Hint whether the operation may be safely retried.
+      required:
+        - code
+        - message
+
+    TaskStatus:
+      type: string
+      description: Lifecycle status of a task.
+      enum: [queued, running, completed, failed, cancelled, timeout]
+
+    MonitorStatus:
+      type: string
+      description: Lifecycle status of a monitor.
+      enum: [active, paused, stopped]
+
+    ExecutionMode:
+      type: string
+      enum: [simple, complex, auto]
+
+    Artifact:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          description: Logical artifact type, e.g., file, pdf, screenshot, csv, json.
+        url:
+          type: string
+          format: uri
+        contentType:
+          type: string
+          description: MIME type of the artifact.
+        metadata:
+          type: object
+          additionalProperties: true
+      required:
+        - id
+        - type
+        - url
+
+    LogEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        level:
+          type: string
+          description: Log level, e.g., debug, info, warn, error.
+        message:
+          type: string
+        context:
+          type: object
+          additionalProperties: true
+
+    TaskOptions:
+      type: object
+      properties:
+        maxDurationMs:
+          type: integer
+          format: int64
+        maxActions:
+          type: integer
+        parallelism:
+          type: integer
+        maxConcurrentTabs:
+          type: integer
+        priority:
+          type: string
+        callbackUrl:
+          type: string
+          format: uri
+        llmProvider:
+          type: string
+        llmModel:
+          type: string
+        llmKeyRef:
+          type: string
+      additionalProperties: false
+
+    CreateTaskRequest:
+      type: object
+      properties:
+        taskType:
+          type: string
+          description: High-level task type, e.g., navigate_extract, workflow, enrichment.
+        instructions:
+          type: string
+          description: Natural language description of the goal.
+        targets:
+          type: array
+          items:
+            type: string
+            description: URL or identifier target.
+        executionMode:
+          $ref: '#/components/schemas/ExecutionMode'
+        dslJson:
+          description: Canonical JSON DSL program describing the automation steps.
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        dslText:
+          type: string
+          description: Optional human-readable DSL that compiles into JSON.
+        inputData:
+          description: Arbitrary JSON input data for enrichment or complex workflows.
+          type: object
+          additionalProperties: true
+        extractionSchema:
+          description: Optional description of the expected structured result format.
+          type: object
+          additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+        idempotencyKey:
+          type: string
+        options:
+          $ref: '#/components/schemas/TaskOptions'
+      required:
+        - taskType
+      additionalProperties: false
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        taskType:
+          type: string
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        executionMode:
+          $ref: '#/components/schemas/ExecutionMode'
+        instructions:
+          type: string
+        targets:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        progress:
+          type: number
+          format: float
+          description: Best-effort progress from 0 to 100.
+        summary:
+          type: string
+        error:
+          $ref: '#/components/schemas/ErrorResponse'
+        resultPreview:
+          type: object
+          additionalProperties: true
+        options:
+          $ref: '#/components/schemas/TaskOptions'
+      required:
+        - id
+        - taskType
+        - status
+        - createdAt
+        - updatedAt
+
+    TaskResult:
+      type: object
+      properties:
+        taskId:
+          type: string
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        data:
+          type: object
+          description: Normalized structured result data.
+          additionalProperties: true
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogEntry'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Artifact'
+        error:
+          $ref: '#/components/schemas/ErrorResponse'
+      required:
+        - taskId
+        - status
+
+    CreateMonitorRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        taskType:
+          type: string
+          description: Default task type for monitor runs.
+        instructions:
+          type: string
+        targets:
+          type: array
+          items:
+            type: string
+        intervalMs:
+          type: integer
+          format: int64
+        executionMode:
+          $ref: '#/components/schemas/ExecutionMode'
+        options:
+          $ref: '#/components/schemas/TaskOptions'
+        metadata:
+          type: object
+          additionalProperties: true
+      required:
+        - instructions
+        - intervalMs
+
+    Monitor:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/MonitorStatus'
+        taskType:
+          type: string
+        instructions:
+          type: string
+        targets:
+          type: array
+          items:
+            type: string
+        intervalMs:
+          type: integer
+          format: int64
+        executionMode:
+          $ref: '#/components/schemas/ExecutionMode'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lastRunAt:
+          type: string
+          format: date-time
+        nextRunAt:
+          type: string
+          format: date-time
+        lastTaskId:
+          type: string
+        options:
+          $ref: '#/components/schemas/TaskOptions'
+        metadata:
+          type: object
+          additionalProperties: true
+      required:
+        - id
+        - status
+        - intervalMs
+        - createdAt
+        - updatedAt
+
+paths:
+  /tasks:
+    post:
+      summary: Create a new automation task
+      operationId: createTask
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '202':
+          description: Task accepted for asynchronous processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation/DSL errors.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tasks/{taskId}:
+    get:
+      summary: Get task status
+      operationId: getTask
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tasks/{taskId}/result:
+    get:
+      summary: Get final task result
+      operationId: getTaskResult
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task result (final or latest partial).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResult'
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tasks/{taskId}/cancel:
+    post:
+      summary: Request cancellation of a running task
+      operationId: cancelTask
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task after cancellation request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Task already in a terminal state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tasks/{taskId}/events:
+    get:
+      summary: Stream task events via Server-Sent Events
+      operationId: streamTaskEvents
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSE stream of task events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Stream of SSE events (event: ..., data: ...).
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /monitors:
+    post:
+      summary: Create a new monitor (scheduled automation)
+      operationId: createMonitor
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMonitorRequest'
+      responses:
+        '201':
+          description: Monitor created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Monitor'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /monitors/{monitorId}:
+    get:
+      summary: Get monitor configuration and status
+      operationId: getMonitor
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: monitorId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Monitor state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Monitor'
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Monitor not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      summary: Delete (stop) a monitor
+      operationId: deleteMonitor
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: monitorId
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Monitor deleted.
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Monitor not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}:
+    get:
+      summary: Get artifact metadata or content
+      operationId: getArtifact
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: artifactId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Artifact metadata or proxied content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artifact'
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

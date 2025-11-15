@@ -1,0 +1,199 @@
+id: personal_workflow_generator
+name: "Personal Workflow Generator"
+description: >
+  Analyze a user's task history and memory core to suggest and construct
+  custom shortcut workflows for complex, multi-step tasks that are unique
+  to that user's habits and needs.
+
+inputs:
+  userId:
+    type: string
+    description: "ID of the user for whom to generate personal workflows."
+
+steps:
+  # 1. Load recent task activities (usage logs)
+  - id: load_task_activity
+    type: tool
+    description: "Fetch recent task activity logs for this user."
+    tool: "memory.query"
+    inputs:
+      userId: "{{inputs.userId}}"
+      type: "task_activity"
+      tags:
+        - "usage_log"
+      limit: 300
+    outputs:
+      taskActivities: "$.items"
+
+  # 2. Load relevant user memory (preferences, projects, contexts)
+  - id: load_user_memory
+    type: tool
+    description: "Fetch memory items that may influence workflow personalization."
+    tool: "memory.query"
+    inputs:
+      userId: "{{inputs.userId}}"
+      tags:
+        - "profile"
+        - "preference"
+        - "project"
+        - "workflow_hint"
+      limit: 100
+    outputs:
+      memoryItems: "$.items"
+
+  # 3. Analyze history + memory to identify candidate workflows
+  - id: analyze_candidate_workflows
+    type: llm
+    description: >
+      Use task activity and memory context to find multi-step patterns that
+      could be turned into personal workflows/shortcuts.
+    inputs:
+      promptTemplate: |
+        You are a Personal Workflow Generator for Aegis AI.
+
+        Your goal is to analyze the user's past tasks and memory to propose
+        custom, multi-step workflows that can be triggered as shortcuts.
+
+        Task activity items (JSON array):
+        {{taskActivities}}
+
+        Relevant memory items (JSON array):
+        {{memoryItems}}
+
+        Identify complex, multi-step patterns that:
+        - Occur repeatedly (or logically should be reusable), and
+        - Combine multiple tools/actions (e.g., web navigation + messaging + saving notes).
+
+        For each candidate workflow, infer:
+        - id: a short, stable slug (e.g., "weekly_client_sync_brief", "linkedin_ai_post")
+        - name: human-friendly name
+        - description: what it does for the user
+        - triggerPhrases: example natural language triggers the user might say
+        - estimatedFrequencyPerMonth: numeric estimate (round number)
+        - steps: ordered list of abstract steps capturing the core actions
+          (not engine-specific, but refer to tools when obvious)
+
+        Represent each step with:
+        - stepId: short id
+        - actionType: "tool_call" | "llm" | "compound"
+        - toolName: MCP or internal tool name if applicable (e.g., "web.search", "web.navigate", "memory.write")
+        - description: what the step does
+        - inputsTemplate: JSON-like object describing dynamic inputs (e.g., { "query": "{{userPrompt}}" })
+        - outputsKey: label for what downstream steps may reference
+
+        Respond as JSON:
+        {
+          "candidateWorkflows": [
+            {
+              "id": "weekly_client_sync_brief",
+              "name": "Weekly Client Sync Brief",
+              "description": "Summarize this week's tasks and updates for a specific client and send via email.",
+              "triggerPhrases": [
+                "prep my weekly sync brief for Acme",
+                "send the weekly project update email"
+              ],
+              "estimatedFrequencyPerMonth": 4,
+              "steps": [
+                {
+                  "stepId": "gather_tasks",
+                  "actionType": "tool_call",
+                  "toolName": "pm.get_tasks",
+                  "description": "Collect tasks completed this week for the target client/project.",
+                  "inputsTemplate": { "project": "{{entities.project}}", "since": "last_week" },
+                  "outputsKey": "tasks"
+                },
+                {
+                  "stepId": "draft_email",
+                  "actionType": "llm",
+                  "toolName": "llm",
+                  "description": "Draft a brief email summary of the week's progress.",
+                  "inputsTemplate": { "tasks": "{{steps.gather_tasks.outputs.tasks}}", "tone": "{{profile.professionalTone}}" },
+                  "outputsKey": "emailDraft"
+                }
+              ]
+            }
+          ]
+        }
+      variables:
+        taskActivities: "{{steps.load_task_activity.outputs.taskActivities}}"
+        memoryItems: "{{steps.load_user_memory.outputs.memoryItems}}"
+    outputs:
+      analysisResult: "$.json"
+
+  # 4. Rank and refine workflows into suggested shortcuts
+  - id: refine_shortcuts
+    type: llm
+    description: "Filter and refine candidate workflows into a top set of suggested shortcuts."
+    inputs:
+      promptTemplate: |
+        You have generated candidate personal workflows for the user.
+
+        Candidate workflows (JSON):
+        {{analysisResult}}
+
+        Rank and filter them to a concise list of the most valuable shortcuts.
+        Prefer workflows that:
+        - Save significant time (multi-step, frequent tasks)
+        - Use tools the user already uses in their history
+        - Are safe and do not involve destructive actions
+
+        For each selected workflow, keep the same structure but add:
+        - priority: "high" | "medium" | "low"
+        - rationale: brief explanation of why this workflow is valuable
+
+        Respond as JSON:
+        {
+          "shortcuts": [
+            {
+              "id": "...",
+              "name": "...",
+              "description": "...",
+              "triggerPhrases": ["..."],
+              "estimatedFrequencyPerMonth": 4,
+              "priority": "high",
+              "rationale": "...",
+              "steps": [
+                {
+                  "stepId": "...",
+                  "actionType": "tool_call" | "llm" | "compound",
+                  "toolName": "...",
+                  "description": "...",
+                  "inputsTemplate": {"...": "..."},
+                  "outputsKey": "..."
+                }
+              ]
+            }
+          ]
+        }
+      variables:
+        analysisResult: "{{steps.analyze_candidate_workflows.outputs.analysisResult}}"
+    outputs:
+      shortcutResult: "$.json"
+
+  # 5. Persist suggested personal workflows into the memory core
+  - id: save_personal_workflows
+    type: tool
+    description: "Store the generated personal workflow shortcuts for later use and UI surfacing."
+    tool: "memory.write"
+    inputs:
+      userId: "{{inputs.userId}}"
+      type: "personal_workflow_shortcuts"
+      key: "personal_workflows.suggestions.{{nowIso}}"
+      data:
+        userId: "{{inputs.userId}}"
+        created_at: "{{nowIso}}"
+        shortcuts: "{{steps.refine_shortcuts.outputs.shortcutResult.shortcuts}}"
+      tags:
+        - "personal_workflow"
+        - "shortcut"
+        - "recommendation"
+    outputs:
+      writeResult: "$.success"
+
+outputs:
+  shortcuts:
+    description: "Suggested personal workflow shortcuts for this user."
+    value: "{{steps.refine_shortcuts.outputs.shortcutResult.shortcuts}}"
+  memoryKey:
+    description: "Key under which the shortcuts were stored in the memory core."
+    value: "personal_workflows.suggestions.{{nowIso}}"

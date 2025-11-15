@@ -1,0 +1,297 @@
+id: market_research_remote_pm_saas
+name: "Market Research: Top 3 PM SaaS Competitors (Remote Teams)"
+description: >
+  Research the top 3 competitors for the user's project management SaaS
+  focused on remote teams, using web navigation tools, then store
+  findings (including strengths and weaknesses) in the user's memory core.
+
+inputs:
+  userId:
+    type: string
+    description: "ID of the user requesting research."
+  prompt:
+    type: string
+    default: "Research the top 3 competitors for my project management SaaS, which is focused on remote teams."
+
+steps:
+  # 1. Interpret request and establish product context
+  - id: interpret_request
+    type: llm
+    description: "Clarify the domain and focus from the user prompt."
+    inputs:
+      promptTemplate: |
+        You are Aegis AI, preparing to do market research.
+        The user said: "{{prompt}}"
+
+        Extract a concise product context:
+        - domain (e.g. 'project_management_saas')
+        - focus (e.g. 'remote_teams')
+        - short positioning statement (1–2 sentences)
+        - target audience
+        Respond in JSON only.
+      variables:
+        prompt: "{{inputs.prompt}}"
+    outputs:
+      productContext: "$.json"  # structured JSON
+
+  # 2. Plan search queries for remote-team PM tools
+  - id: plan_queries
+    type: llm
+    description: "Generate focused web search queries for remote-team PM competitors."
+    inputs:
+      promptTemplate: |
+        Given this product context:
+        {{productContext}}
+
+        Generate 3–5 web search queries that will surface top
+        project management SaaS tools aimed at remote or distributed teams.
+        Respond as JSON:
+        { "queries": [ "query1", "query2", ... ] }
+      variables:
+        productContext: "{{steps.interpret_request.outputs.productContext}}"
+    outputs:
+      searchPlan: "$.json"
+
+  # 3. Perform web searches
+  - id: run_web_searches
+    type: tool
+    description: "Use web.search MCP tool to find candidate competitors."
+    tool: "web.search"
+    loop:
+      over: "{{steps.plan_queries.outputs.searchPlan.queries}}"
+      as: query
+    inputs:
+      query: "{{query}}"
+      maxResults: 10
+    outputs:
+      rawSearchResults: "collect"  # array of arrays of search results
+
+  # 4. Aggregate candidate products from search results
+  - id: aggregate_candidates
+    type: llm
+    description: "Aggregate and deduplicate product candidates from search results."
+    inputs:
+      promptTemplate: |
+        You are aggregating competitor candidates for a project management SaaS
+        focused on remote teams.
+
+        Here are raw search results (JSON):
+        {{rawSearchResults}}
+
+        Extract a list of distinct products that are actually
+        project management tools or collaboration platforms relevant
+        to remote/distributed teams.
+
+        For each product, provide:
+        - name
+        - website (if obvious)
+        - brief_reason (why it's relevant)
+        Respond as JSON:
+        { "candidates": [ { "name": "...", "website": "...", "brief_reason": "..." }, ... ] }
+      variables:
+        rawSearchResults: "{{steps.run_web_searches.outputs.rawSearchResults}}"
+    outputs:
+      candidates: "$.json.candidates"
+
+  # 5. Visit each candidate site and extract key content
+  - id: visit_candidate_sites
+    type: composite
+    description: "Navigate to each candidate site and extract marketing/feature content."
+    loop:
+      over: "{{steps.aggregate_candidates.outputs.candidates}}"
+      as: candidate
+    steps:
+      - id: navigate_site
+        type: tool
+        tool: "web.navigate"
+        inputs:
+          url: "{{candidate.website}}"
+        outputs:
+          page: "$"
+
+      - id: extract_headline
+        type: tool
+        tool: "web.extract"
+        inputs:
+          pageId: "{{steps.navigate_site.outputs.page.pageId}}"
+          selector: "h1"
+          format: "text"
+        outputs:
+          headline: "$.content"
+
+      - id: extract_features
+        type: tool
+        tool: "web.extract"
+        inputs:
+          pageId: "{{steps.navigate_site.outputs.page.pageId}}"
+          selector: "body"
+          format: "text"
+        outputs:
+          bodyText: "$.content"
+
+      - id: summarize_candidate
+        type: llm
+        description: "Summarize positioning and key features for this product."
+        inputs:
+          promptTemplate: |
+            You are analyzing a competitor in project management SaaS
+            for remote teams.
+
+            Candidate:
+            {{candidate}}
+
+            Page headline:
+            {{headline}}
+
+            Page text (may be long, summarize carefully):
+            {{bodyText}}
+
+            From this, produce a structured summary:
+            {
+              "name": "...",
+              "website": "...",
+              "positioning": "short positioning summary",
+              "target_audience": "who they seem to target",
+              "key_features": ["feature1", "feature2", ...],
+              "remote_team_focus": "how explicitly they address remote/distributed teams",
+              "pricing_signals": "high-level impression, not exact numbers",
+              "notable_integrations": ["Slack", "Zoom", ...]
+            }
+          variables:
+            candidate: "{{candidate}}"
+            headline: "{{steps.extract_headline.outputs.headline}}"
+            bodyText: "{{steps.extract_features.outputs.bodyText}}"
+        outputs:
+          structuredSummary: "$.json"
+    outputs:
+      competitorProfiles: "collect.steps.summarize_candidate.outputs.structuredSummary"
+
+  # 6. Score and select top 3 competitors
+  - id: rank_competitors
+    type: llm
+    description: "Score competitors and select the top 3 most relevant to remote teams."
+    inputs:
+      promptTemplate: |
+        You are ranking competitors for a project management SaaS focused on remote teams.
+
+        Product context:
+        {{productContext}}
+
+        Competitor profiles:
+        {{competitorProfiles}}
+
+        Rank these competitors by:
+        - strength and clarity of focus on remote/distributed teams
+        - overlap in use cases and features
+        - perceived market maturity/visibility (based on description)
+
+        Return JSON:
+        {
+          "top_competitors": [
+            {
+              "name": "...",
+              "website": "...",
+              "positioning": "...",
+              "target_audience": "...",
+              "key_features": [...],
+              "remote_team_focus": "...",
+              "pricing_signals": "...",
+              "notable_integrations": [...],
+              "rank": 1
+            },
+            ...
+          ]
+        }
+      variables:
+        productContext: "{{steps.interpret_request.outputs.productContext}}"
+        competitorProfiles: "{{steps.visit_candidate_sites.outputs.competitorProfiles}}"
+    outputs:
+      rankedCompetitors: "$.json.top_competitors"
+
+  # 7. Derive strengths & weaknesses vs user's product
+  - id: analyze_strengths_weaknesses
+    type: llm
+    description: "For each top competitor, derive strengths and weaknesses relative to the user's SaaS."
+    inputs:
+      promptTemplate: |
+        You are performing competitor analysis.
+
+        User's product context:
+        {{productContext}}
+
+        Top competitors (ranked):
+        {{rankedCompetitors}}
+
+        For each competitor, infer:
+        - strengths: where they appear strong or differentiated
+        - weaknesses: where they may be lacking or vulnerable
+        - notes_for_strategy: 2–3 bullet points about how the user could position
+          or improve relative to this competitor.
+
+        Respond as JSON:
+        {
+          "competitors": [
+            {
+              "name": "...",
+              "website": "...",
+              "positioning": "...",
+              "target_audience": "...",
+              "key_features": [...],
+              "remote_team_focus": "...",
+              "pricing_signals": "...",
+              "notable_integrations": [...],
+              "rank": 1,
+              "strengths": ["...", "..."],
+              "weaknesses": ["...", "..."],
+              "notes_for_strategy": ["...", "..."]
+            },
+            ...
+          ],
+          "summary_insights": [
+            "overall observation 1",
+            "overall observation 2"
+          ]
+        }
+      variables:
+        productContext: "{{steps.interpret_request.outputs.productContext}}"
+        rankedCompetitors: "{{steps.rank_competitors.outputs.rankedCompetitors}}"
+    outputs:
+      competitorAnalysis: "$.json"
+
+  # 8. Persist findings in the user's memory core
+  - id: save_to_memory_core
+    type: tool
+    description: "Store market research in the user's memory core for future strategic planning."
+    tool: "memory.write"
+    inputs:
+      userId: "{{inputs.userId}}"
+      type: "competitor_research"
+      key: >
+        market_research.competitors.project_management_saas.remote_teams.{{nowIso}}
+      data:
+        domain: "project_management_saas"
+        focus: "remote_teams"
+        created_at: "{{nowIso}}"
+        source_prompt: "{{inputs.prompt}}"
+        product_context: "{{steps.interpret_request.outputs.productContext}}"
+        competitors: "{{steps.analyze_strengths_weaknesses.outputs.competitorAnalysis.competitors}}"
+        summary_insights: "{{steps.analyze_strengths_weaknesses.outputs.competitorAnalysis.summary_insights}}"
+        notes_for_future_strategy:
+          - "Use this entry during strategic planning sessions comparing our product vs competitors."
+      tags:
+        - "market_research"
+        - "competitors"
+        - "remote_teams"
+        - "project_management_saas"
+        - "strategic_planning"
+
+outputs:
+  topCompetitors:
+    description: "Top 3 competitors with strengths/weaknesses."
+    value: "{{steps.analyze_strengths_weaknesses.outputs.competitorAnalysis.competitors}}"
+  summaryInsights:
+    description: "High-level strategic insights across competitors."
+    value: "{{steps.analyze_strengths_weaknesses.outputs.competitorAnalysis.summary_insights}}"
+  memoryKey:
+    description: "Key under which this research was stored in the memory core."
+    value: "market_research.competitors.project_management_saas.remote_teams.{{nowIso}}"

@@ -1,0 +1,36 @@
+{
+  "name": "aegis-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "mcp:dev": "node --loader ts-node/esm --experimental-specifier-resolution=node src/server.ts",
+    "mcp:build": "tsc",
+    "mcp:start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.0",
+    "@types/js-yaml": "^4.0.9",
+    "better-sqlite3": "^12.4.1",
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.3",
+    "js-yaml": "^4.1.1",
+    "playwright": "^1.56.1",
+    "zod": "^3.25.76",
+    "next": "^14.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

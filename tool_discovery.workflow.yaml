@@ -1,0 +1,170 @@
+id: tool_discovery
+name: "Tool Discovery: Suggest MCP Tools from Recurring Tasks"
+description: >
+  Analyze the user's recurring tasks and suggest relevant third-party MCP tools
+  from a curated marketplace that can help automate those tasks more efficiently.
+
+inputs:
+  userId:
+    type: string
+    description: "ID of the user to analyze."
+
+steps:
+  # 1. Load recent task activities for the user
+  - id: load_task_activity
+    type: tool
+    description: "Fetch recent task activity logs from the memory core."
+    tool: "memory.query"
+    inputs:
+      userId: "{{inputs.userId}}"
+      type: "task_activity"
+      tags:
+        - "usage_log"
+      limit: 200
+    outputs:
+      taskActivities: "$.items"
+
+  # 2. Load curated MCP marketplace descriptor
+  - id: load_marketplace
+    type: tool
+    description: "Load the curated MCP tool marketplace definition from memory."
+    tool: "memory.read"
+    inputs:
+      userId: "{{inputs.userId}}"
+      key: "marketplace.tools.mcp"
+    outputs:
+      marketplaceItem: "$.item"
+
+  # 3. Build recurring task clusters from raw activity
+  - id: build_recurring_tasks
+    type: llm
+    description: "Cluster the user's tasks into recurring patterns with frequencies."
+    inputs:
+      promptTemplate: |
+        You are analyzing a user's recent task activity to find recurring patterns
+        that could benefit from automation via MCP tools.
+
+        Task activity items (JSON array):
+        {{taskActivities}}
+
+        Each item typically has fields like:
+        - id, intent, naturalLanguagePrompt, toolsUsed, entities, timestamp, success
+
+        1. Group tasks into clusters representing recurring tasks.
+        2. For each cluster, compute:
+           - clusterId (short slug)
+           - canonicalIntent (e.g., "send_weekly_status_email")
+           - description (1–2 sentence human-readable description)
+           - frequencyPerWeek (estimate)
+           - toolsUsed (union of toolsUsed across tasks)
+           - relatedServices (infer e.g., Gmail, Notion, Slack, LinkedIn, Jira, Google Sheets)
+           - samplePrompts (2–3 representative prompts)
+
+        Respond as JSON:
+        {
+          "recurringTasks": [
+            {
+              "clusterId": "weekly_status_email",
+              "canonicalIntent": "send_weekly_status_email",
+              "description": "Send weekly project status emails to the team.",
+              "frequencyPerWeek": 1.0,
+              "toolsUsed": ["email.send", "pm.get_tasks"],
+              "relatedServices": ["Gmail"],
+              "samplePrompts": ["Send this week's status for project Alpha."]
+            }
+          ]
+        }
+      variables:
+        taskActivities: "{{steps.load_task_activity.outputs.taskActivities}}"
+    outputs:
+      recurringTasks: "$.json.recurringTasks"
+
+  # 4. Match recurring tasks to marketplace tools
+  - id: match_tools
+    type: llm
+    description: "Match recurring tasks to candidate MCP tools from the marketplace."
+    inputs:
+      promptTemplate: |
+        You are a Tool Discovery engine. Your goal is to suggest MCP tools
+        that help automate the user's recurring tasks.
+
+        Recurring tasks (JSON):
+        {{recurringTasks}}
+
+        Marketplace tools (JSON):
+        {{marketplace}}
+
+        Each marketplace tool typically looks like:
+        {
+          "id": "mcp-google-gmail",
+          "name": "Gmail Automation",
+          "provider": "ThirdParty Inc.",
+          "description": "Send and manage Gmail messages via MCP.",
+          "capabilities": ["email.send", "email.read", "email.search"],
+          "tags": ["email", "gmail", "communication", "automation"],
+          "idealUseCases": ["Send weekly status emails", "Automate follow-ups"],
+          "requiredServices": ["Gmail"],
+          "homepage": "https://...",
+          "installUrl": "https://.../install"
+        }
+
+        For each recurring task, select up to 3 tools that best match based on:
+        - overlapping capabilities
+        - matching services (e.g., Gmail, Notion, Slack)
+        - tags and idealUseCases relevant to the task description
+
+        For each suggested tool, include a reason and a score between 0 and 1.
+
+        Respond as JSON:
+        {
+          "clusters": [
+            {
+              "clusterId": "weekly_status_email",
+              "canonicalIntent": "send_weekly_status_email",
+              "description": "Send weekly project status emails to the team.",
+              "frequencyPerWeek": 1.0,
+              "suggestedTools": [
+                {
+                  "toolId": "mcp-google-gmail",
+                  "name": "Gmail Automation",
+                  "score": 0.9,
+                  "reason": "You frequently send weekly status emails via Gmail; this tool can automate drafting and sending them.",
+                  "installUrl": "https://.../install"
+                }
+              ]
+            }
+          ]
+        }
+      variables:
+        recurringTasks: "{{steps.build_recurring_tasks.outputs.recurringTasks}}"
+        marketplace: "{{steps.load_marketplace.outputs.marketplaceItem.data}}"
+    outputs:
+      discoveryResult: "$.json"
+
+  # 5. Persist tool suggestions to the user's memory core
+  - id: save_suggestions
+    type: tool
+    description: "Save tool discovery suggestions so they can be surfaced later."
+    tool: "memory.write"
+    inputs:
+      userId: "{{inputs.userId}}"
+      type: "tool_discovery"
+      key: "tool_discovery.suggestions.{{nowIso}}"
+      data:
+        userId: "{{inputs.userId}}"
+        created_at: "{{nowIso}}"
+        clusters: "{{steps.match_tools.outputs.discoveryResult.clusters}}"
+      tags:
+        - "tool_discovery"
+        - "automation"
+        - "recommendation"
+    outputs:
+      writeResult: "$.success"
+
+outputs:
+  clusters:
+    description: "Recurring task clusters with suggested MCP tools."
+    value: "{{steps.match_tools.outputs.discoveryResult.clusters}}"
+  memoryKey:
+    description: "Key under which the suggestions were stored in the memory core."
+    value: "tool_discovery.suggestions.{{nowIso}}"

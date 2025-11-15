@@ -1,0 +1,224 @@
+id: proactive_alerts
+name: "Proactive Alert System: Monitor Interests & Send Daily Summaries"
+description: >
+  Continuously monitor a user's saved interests and data streams (e.g., tracked stocks,
+  news topics, project milestones). Proactively generate and send daily summary reports
+  via WhatsApp, email, or other configured channels without being asked.
+
+inputs:
+  userId:
+    type: string
+    description: "ID of the user to monitor."
+
+steps:
+  # 1. Load user alert preferences and configuration
+  - id: load_alert_config
+    type: tool
+    description: "Load the user's alert preferences (channels, frequency, interests)."
+    tool: "memory.read"
+    inputs:
+      userId: "{{inputs.userId}}"
+      key: "user.alerts.config"
+    outputs:
+      alertConfig: "$.item.data"
+
+  # 2. Load tracked interests from memory core
+  - id: load_tracked_interests
+    type: tool
+    description: "Query all items tagged as tracked interests (stocks, news topics, projects, etc.)."
+    tool: "memory.query"
+    inputs:
+      userId: "{{inputs.userId}}"
+      tags:
+        - "tracked_interest"
+      limit: 50
+    outputs:
+      trackedInterests: "$.items"
+
+  # 3. Fetch fresh data for each tracked interest
+  - id: fetch_interest_data
+    type: composite
+    description: "For each tracked interest, fetch the latest data from external sources or APIs."
+    loop:
+      over: "{{steps.load_tracked_interests.outputs.trackedInterests}}"
+      as: interest
+    steps:
+      - id: determine_data_source
+        type: llm
+        description: "Determine the appropriate data source/API for this interest."
+        inputs:
+          promptTemplate: |
+            Given this tracked interest:
+            {{interest}}
+
+            Determine the best data source and query to fetch fresh information.
+            
+            Respond as JSON:
+            {
+              "source": "stock_api" | "news_api" | "web_search" | "rss_feed" | "project_tracker",
+              "query": "specific query string or symbol",
+              "endpoint": "API endpoint or URL if applicable"
+            }
+          variables:
+            interest: "{{interest}}"
+        outputs:
+          dataSource: "$.json"
+
+      - id: fetch_data
+        type: tool
+        description: "Fetch data using the determined source."
+        tool: "{{steps.determine_data_source.outputs.dataSource.source}}"
+        inputs:
+          query: "{{steps.determine_data_source.outputs.dataSource.query}}"
+        outputs:
+          rawData: "$"
+
+      - id: extract_relevant_info
+        type: llm
+        description: "Extract key changes, updates, or insights from the raw data."
+        inputs:
+          promptTemplate: |
+            You are analyzing fresh data for a tracked interest.
+
+            Interest:
+            {{interest}}
+
+            Raw data fetched:
+            {{rawData}}
+
+            Extract:
+            - key changes since last check (price changes, news headlines, project updates)
+            - notable events or alerts (significant moves, deadlines, breaking news)
+            - summary (1-2 sentences)
+
+            Respond as JSON:
+            {
+              "interestKey": "...",
+              "interestName": "...",
+              "changes": ["change1", "change2"],
+              "alerts": ["alert1"],
+              "summary": "..."
+            }
+          variables:
+            interest: "{{interest}}"
+            rawData: "{{steps.fetch_data.outputs.rawData}}"
+        outputs:
+          interestSummary: "$.json"
+    outputs:
+      interestSummaries: "collect.steps.extract_relevant_info.outputs.interestSummary"
+
+  # 4. Compose daily summary report
+  - id: compose_summary_report
+    type: llm
+    description: "Compose a concise, well-formatted daily summary report from all interest updates."
+    inputs:
+      promptTemplate: |
+        You are composing a daily summary report for the user based on their tracked interests.
+
+        User alert config:
+        {{alertConfig}}
+
+        Interest summaries:
+        {{interestSummaries}}
+
+        Create a friendly, concise report that includes:
+        - Greeting
+        - Summary for each tracked interest (stocks, news topics, projects, etc.)
+        - Notable alerts or significant changes highlighted
+        - Closing note
+
+        Adapt the tone based on user preferences in alertConfig (if available).
+
+        Respond as JSON:
+        {
+          "reportTitle": "Daily Summary for {{date}}",
+          "reportBody": "formatted text suitable for WhatsApp/email",
+          "hasAlerts": true/false,
+          "alertCount": number
+        }
+      variables:
+        alertConfig: "{{steps.load_alert_config.outputs.alertConfig}}"
+        interestSummaries: "{{steps.fetch_interest_data.outputs.interestSummaries}}"
+        date: "{{nowIso}}"
+    outputs:
+      summaryReport: "$.json"
+
+  # 5. Determine delivery channels
+  - id: determine_channels
+    type: llm
+    description: "Decide which channels to use based on user preferences and alert priority."
+    inputs:
+      promptTemplate: |
+        User alert config:
+        {{alertConfig}}
+
+        Summary report:
+        {{summaryReport}}
+
+        Based on the config, decide which channels to send the report to.
+        Options: whatsapp, email, sms, slack, push_notification
+
+        If hasAlerts is true, prioritize immediate channels (WhatsApp, SMS).
+        Otherwise use preferred daily channels.
+
+        Respond as JSON:
+        {
+          "channels": ["whatsapp", "email"],
+          "priority": "high" | "normal"
+        }
+      variables:
+        alertConfig: "{{steps.load_alert_config.outputs.alertConfig}}"
+        summaryReport: "{{steps.compose_summary_report.outputs.summaryReport}}"
+    outputs:
+      deliveryPlan: "$.json"
+
+  # 6. Send report via selected channels
+  - id: send_via_channels
+    type: composite
+    description: "Send the daily summary report via each selected channel."
+    loop:
+      over: "{{steps.determine_channels.outputs.deliveryPlan.channels}}"
+      as: channel
+    steps:
+      - id: send_message
+        type: tool
+        tool: "{{channel}}.send"
+        inputs:
+          userId: "{{inputs.userId}}"
+          message: "{{steps.compose_summary_report.outputs.summaryReport.reportBody}}"
+          subject: "{{steps.compose_summary_report.outputs.summaryReport.reportTitle}}"
+        outputs:
+          sendResult: "$"
+    outputs:
+      deliveryResults: "collect.steps.send_message.outputs.sendResult"
+
+  # 7. Log alert execution to memory core
+  - id: log_alert_execution
+    type: tool
+    description: "Store a record of this alert execution for tracking and debugging."
+    tool: "memory.write"
+    inputs:
+      userId: "{{inputs.userId}}"
+      type: "alert_execution"
+      key: "alerts.executions.{{nowIso}}"
+      data:
+        userId: "{{inputs.userId}}"
+        executedAt: "{{nowIso}}"
+        reportTitle: "{{steps.compose_summary_report.outputs.summaryReport.reportTitle}}"
+        channelsUsed: "{{steps.determine_channels.outputs.deliveryPlan.channels}}"
+        alertCount: "{{steps.compose_summary_report.outputs.summaryReport.alertCount}}"
+        interestCount: "{{steps.fetch_interest_data.outputs.interestSummaries.length}}"
+      tags:
+        - "proactive_alert"
+        - "execution_log"
+
+outputs:
+  reportTitle:
+    description: "Title of the generated summary report."
+    value: "{{steps.compose_summary_report.outputs.summaryReport.reportTitle}}"
+  channelsUsed:
+    description: "Channels where the report was sent."
+    value: "{{steps.determine_channels.outputs.deliveryPlan.channels}}"
+  alertCount:
+    description: "Number of notable alerts in this report."
+    value: "{{steps.compose_summary_report.outputs.summaryReport.alertCount}}"
