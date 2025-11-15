@@ -138,7 +138,7 @@ export async function saveProcedure(
   await memory.writeItem(record.userId, {
     key,
     type: PROCEDURE_MEMORY_TYPE,
-    data: record,
+    data: record as unknown as Record<string, unknown>,
     createdAt: now,
     tags: ["procedural", "workflow"],
   });
